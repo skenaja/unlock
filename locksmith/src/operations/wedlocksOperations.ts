@@ -13,9 +13,15 @@ import { unified } from 'unified'
 import remarkParse from 'remark-parse'
 import remarkHtml from 'remark-html'
 import * as emailOperations from './emailOperations'
+import * as lockSettingOperations from './lockSettingOperations'
 
 import { createEventIcs } from '../utils/calendar'
 import { EventProps, getEventDetail } from './eventOperations'
+import { LockSetting } from '../models/lockSetting'
+import {
+  DEFAULT_LOCK_SETTINGS,
+  LockSettingProps,
+} from '../controllers/v2/lockSettingController'
 dayjs.extend(utc)
 dayjs.extend(timezone)
 
@@ -25,6 +31,8 @@ type Params = {
   keychainUrl?: string
   lockName: string
   network: string
+  networkId: number
+  lockAddress: string
   txUrl?: string
   openSeaUrl?: string
 }
@@ -60,12 +68,23 @@ export const sendEmail = async (
   params: Params = {} as any,
   attachments: Attachment[] = []
 ) => {
+  // prevent send email when is not enabled
+  const { sendEmail: canSendEmail, replyTo } = await getLockSettings(
+    params.lockAddress,
+    Number(params.networkId)
+  )
+
+  if (!canSendEmail) {
+    return
+  }
+
   const payload = {
     template,
     failoverTemplate,
     recipient,
     params,
     attachments,
+    replyTo,
   }
 
   try {
@@ -220,11 +239,26 @@ const getTemplates = ({
     ? [`keyAirdropped${lockAddress.trim()}`, `keyAirdropped`]
     : [`keyMined${lockAddress.trim()}`, 'keyMined']
 }
+
+const getLockSettings = async (
+  lockAddress: string,
+  network?: number
+): Promise<LockSetting | LockSettingProps> => {
+  if (lockAddress && network) {
+    const settings = await lockSettingOperations.getSettings({
+      lockAddress: Normalizer.ethereumAddress(lockAddress),
+      network,
+    })
+    return settings
+  }
+  return DEFAULT_LOCK_SETTINGS
+}
 /**
  * Check if there are metadata with an email address for a key and sends
  * and email based on the lock's template if applicable
  * @param key
  */
+
 export const notifyNewKeyToWedlocks = async (
   key: Key,
   network?: number,
@@ -322,9 +356,11 @@ export const notifyNewKeyToWedlocks = async (
     templates[1],
     recipient,
     {
+      lockAddress: key.lock.address ?? '',
       lockName: key.lock.name,
       keychainUrl: 'https://app.unlock-protocol.com/keychain',
       keyId: tokenId ?? '',
+      networkId: network!,
       network: networks[network!]?.name ?? '',
       openSeaUrl,
       transferUrl: transferUrl.toString(),
